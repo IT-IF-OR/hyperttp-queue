@@ -8,7 +8,7 @@ import { QueueManager } from "./utils/QueueManager.js";
 
 export function withQueue(client: HyperCore, maxConcurrent: number): HyperCore {
   const queue = new QueueManager(maxConcurrent);
-  const next = client.dispatch;
+  const next = client.dispatch.bind(client);
   const originalGetStats = client.getStats.bind(client);
 
   client.getStats = () => ({
@@ -17,8 +17,20 @@ export function withQueue(client: HyperCore, maxConcurrent: number): HyperCore {
     activeRequests: queue.activeCount,
   });
 
-  client.dispatch = (req: InternalRequest) => {
-    return queue.enqueue(() => next(req));
+  client.dispatch = async (req: InternalRequest) => {
+    const signal = req.signal;
+
+    if (signal?.aborted) {
+      throw new DOMException("The user aborted a request.", "AbortError");
+    }
+
+    return queue.enqueue(async () => {
+      if (signal?.aborted) {
+        throw new DOMException("The user aborted a request.", "AbortError");
+      }
+
+      return next(req);
+    });
   };
 
   return client;
