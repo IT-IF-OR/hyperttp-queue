@@ -1,40 +1,10 @@
 import type {
-  HyperCore,
   HyperPlugin,
   InternalRequest,
   HttpClientOptions,
+  HttpResponse,
 } from "@hyperttp/core";
 import { QueueManager } from "./utils/QueueManager.js";
-
-export function withQueue(client: HyperCore, maxConcurrent: number): HyperCore {
-  const queue = new QueueManager(maxConcurrent);
-  const next = client.dispatch.bind(client);
-  const originalGetStats = client.getStats.bind(client);
-
-  client.getStats = () => ({
-    ...originalGetStats(),
-    queuedRequests: queue.queuedCount,
-    activeRequests: queue.activeCount,
-  });
-
-  client.dispatch = async (req: InternalRequest) => {
-    const signal = req.signal;
-
-    if (signal?.aborted) {
-      throw new DOMException("The user aborted a request.", "AbortError");
-    }
-
-    return queue.enqueue(async () => {
-      if (signal?.aborted) {
-        throw new DOMException("The user aborted a request.", "AbortError");
-      }
-
-      return next(req);
-    });
-  };
-
-  return client;
-}
 
 declare module "@hyperttp/core" {
   interface HyperttpPluginsExtension {
@@ -43,11 +13,42 @@ declare module "@hyperttp/core" {
   }
 }
 
-export const QueuePlugin: HyperPlugin = {
-  name: "hyperttp-queue",
-  phase: "CONTROL",
-  enabled: (config: HttpClientOptions) => !!config.queue?.enabled,
-  apply: (client: HyperCore, config: HttpClientOptions) => {
-    return withQueue(client, config.network?.maxConcurrent || 500);
-  },
-};
+export function withQueue(options?: { maxConcurrent?: number }): HyperPlugin {
+  let queue: QueueManager;
+
+  return {
+    name: "hyperttp-queue",
+    phase: "CONTROL",
+    enabled: (config: HttpClientOptions) => !!config.queue?.enabled,
+
+    setup(core, config) {
+      const maxConcurrent =
+        options?.maxConcurrent ?? config.network?.maxConcurrent ?? 500;
+      queue = new QueueManager(maxConcurrent);
+
+      const originalGetStats = core.getStats.bind(core);
+      core.getStats = () => ({
+        ...originalGetStats(),
+        queuedRequests: queue.queuedCount,
+        activeRequests: queue.activeCount,
+      });
+    },
+
+    wrapDispatch: (next) => {
+      return async <T>(req: InternalRequest): Promise<HttpResponse<T>> => {
+        const signal = req.signal;
+
+        if (signal?.aborted) {
+          throw new DOMException("The user aborted a request.", "AbortError");
+        }
+
+        return queue.enqueue(async () => {
+          if (signal?.aborted) {
+            throw new DOMException("The user aborted a request.", "AbortError");
+          }
+          return next<T>(req);
+        });
+      };
+    },
+  };
+}
