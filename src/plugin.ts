@@ -3,6 +3,7 @@ import type {
   InternalRequest,
   HttpClientOptions,
   HttpResponse,
+  PluginContext,
 } from "@hyperttp/core";
 import { QueueManager } from "./utils/QueueManager.js";
 
@@ -21,7 +22,7 @@ export function withQueue(options?: { maxConcurrent?: number }): HyperPlugin {
     phase: "CONTROL",
     enabled: (config: HttpClientOptions) => !!config.queue?.enabled,
 
-    setup(core, config) {
+    setup({ core, config }: PluginContext) {
       const maxConcurrent =
         options?.maxConcurrent ?? config.network?.maxConcurrent ?? 500;
       queue = new QueueManager(maxConcurrent);
