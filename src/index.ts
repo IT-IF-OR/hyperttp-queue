@@ -1,3 +1,8 @@
 export { withQueue } from "./plugin.js";
-export * from "./utils/QueueManager.js";
-export type * from "./types/queue.js";
+export { QueueManager } from "./utils/QueueManager.js";
+export type {
+  QueueOptions,
+  Executor,
+  QueueNode,
+  Scheduler,
+} from "./types/queue.js";
