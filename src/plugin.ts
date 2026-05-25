@@ -10,7 +10,13 @@ import { QueueManager } from "./utils/QueueManager.js";
 declare module "@hyperttp/core" {
   interface HyperttpPluginsExtension {
     queue?: { enabled?: boolean };
-    network?: { maxConcurrent?: number };
+  }
+
+  interface HyperCore {
+    getStats: () => Record<string, unknown> & {
+      queuedRequests?: number;
+      activeRequests?: number;
+    };
   }
 }
 
@@ -22,12 +28,17 @@ export function withQueue(options?: { maxConcurrent?: number }): HyperPlugin {
     phase: "CONTROL",
     enabled: (config: HttpClientOptions) => !!config.queue?.enabled,
 
-    setup({ core, config }: PluginContext) {
+    setup(ctx: PluginContext) {
+      const { core, config } = ctx;
       const maxConcurrent =
         options?.maxConcurrent ?? config.network?.maxConcurrent ?? 500;
       queue = new QueueManager(maxConcurrent);
 
-      const originalGetStats = core.getStats.bind(core);
+      const originalGetStats =
+        typeof core.getStats === "function"
+          ? core.getStats.bind(core)
+          : () => ({});
+
       core.getStats = () => ({
         ...originalGetStats(),
         queuedRequests: queue.queuedCount,
@@ -37,13 +48,13 @@ export function withQueue(options?: { maxConcurrent?: number }): HyperPlugin {
 
     wrapDispatch: (next) => {
       return async <T>(req: InternalRequest): Promise<HttpResponse<T>> => {
-        const signal = req.signal;
+        const { signal } = req;
 
         if (signal?.aborted) {
           throw new DOMException("The user aborted a request.", "AbortError");
         }
 
-        return queue.enqueue(async () => {
+        return queue.enqueue<HttpResponse<T>>(async () => {
           if (signal?.aborted) {
             throw new DOMException("The user aborted a request.", "AbortError");
           }

@@ -1,6 +1,6 @@
 {
   "name": "@hyperttp/queue",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -17,7 +17,7 @@
     "url": "git+https://github.com/IT-IF-OR/hyperttp-queue.git"
   },
   "peerDependencies": {
-    "@hyperttp/core": "^1.1.8"
+    "@hyperttp/core": "^1.1.11"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
