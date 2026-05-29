@@ -8,126 +8,95 @@ import type {
 } from "@hyperttp/types";
 import { QueueManager } from "./utils/QueueManager.js";
 
+/**
+ * @ru Расширение типов для поддержки очереди запросов.
+ * @en Type extension for request queue support.
+ */
 declare module "@hyperttp/types" {
   interface HyperttpPluginsExtension {
+    /**
+     * @ru Конфигурация очереди запросов.
+     * @en Request queue configuration.
+     */
     queue?: { enabled?: boolean };
-  }
-
-  interface HyperCore {
-    getStats: () => Record<string, unknown> & {
-      queuedRequests?: number;
-      activeRequests?: number;
-    };
   }
 }
 
 /**
- * @ru Плагин управления очередью запросов для HyperCore на базе плоских хуков жизненного цикла.
- * @en Request queue management plugin for HyperCore based on flat lifecycle hooks.
- * * @param options - @ru Настройки лимитов конкурентности. @en Concurrency limit configurations.
- * @returns @ru Экземпляр плагина HyperPlugin. @en HyperPlugin object instance.
+ * @ru Создаёт плагин очереди запросов с ограничением конкурентности.
+ * @en Creates a request queue plugin with concurrency limit.
+ *
+ * @returns @ru Плагин для Hyperttp. @en Hyperttp plugin.
+ *
+ * @example
+ * ```typescript
+ * const client = new HttpClient({
+ *   plugins: [withQueue()],
+ *   queue: { enabled: true },
+ *   network: { maxConcurrent: 10 }
+ * });
+ * ```
  */
 export function withQueue(): HyperPlugin {
   let queue: QueueManager;
-
-  /**
-   * @ru Карта триггеров для удерживания и последующего освобождения слотов внутри QueueManager.
-   * @en Map of execution triggers used to retain and release active slots within QueueManager.
-   */
-  const activeTokens = new WeakMap<InternalRequest, () => void>();
+  const releases = new WeakMap<InternalRequest, () => void>();
 
   return {
-    /**
-     * @ru Уникальное имя плагина для логирования и предотвращения дублирования в конвейере.
-     * @en Unique plugin identifier for logging and pipeline deduplication.
-     */
     name: "hyperttp-queue",
 
     /**
-     * @ru Динамическая проверка необходимости активации плагина на основе конфигурации клиента.
-     * @en Dynamic check to evaluate if the plugin should activate based on client settings.
+     * @ru Проверяет, включена ли очередь в конфигурации.
+     * @en Checks if queue is enabled in configuration.
      */
     enabled: (config: HttpClientOptions): boolean => !!config.queue?.enabled,
 
     /**
-     * @ru Хук инициализации. Создает экземпляр QueueManager и расширяет сборщик метрик ядра.
-     * @en Initialization hook. Creates the QueueManager instance and decorates the core metrics collector.
+     * @ru Инициализирует менеджер очереди.
+     * @en Initializes the queue manager.
      */
     setup(ctx: PluginContext): void {
-      const { core, config } = ctx;
-      const maxConcurrent = config.network?.maxConcurrent ?? 500;
-
+      const maxConcurrent = ctx.config.network?.maxConcurrent ?? 500;
       queue = new QueueManager(maxConcurrent);
-
-      const originalGetStats =
-        typeof (core as any).getStats === "function"
-          ? (core as any).getStats.bind(core)
-          : () => ({});
-
-      (core as any).getStats = () => ({
-        ...originalGetStats(),
-        queuedRequests: queue.queuedCount,
-        activeRequests: queue.activeCount,
-      });
     },
 
     /**
-     * @ru Перехватчик фазы запроса. Приостанавливает выполнение конвейера до момента выделения слота пулом.
-     * @en Request phase interceptor. Suspends pipeline execution until a pool slot is allocated.
+     * @ru Обрабатывает запрос перед отправкой, запрашивая слот в очереди.
+     * @en Handles request before sending, acquiring a queue slot.
+     *
+     * @param req - @ru Внутренний объект запроса. @en Internal request object.
+     * @throws {DOMException} @ru Если запрос был отменён. @en If request was aborted.
      */
     async onRequest(req: InternalRequest): Promise<void> {
-      const { signal } = req;
-
-      if (signal?.aborted) {
+      if (req.signal?.aborted) {
         throw new DOMException("The user aborted a request.", "AbortError");
       }
 
-      await new Promise<void>((resolveOnRequest, rejectOnRequest) => {
-        queue
-          .enqueue(async () => {
-            if (signal?.aborted) {
-              throw new DOMException(
-                "The user aborted a request.",
-                "AbortError",
-              );
-            }
-
-            // Возвращаем внутренний Promise, блокируя handleSuccess в QueueManager
-            return new Promise<void>((resolveSlot) => {
-              activeTokens.set(req, resolveSlot);
-
-              // Пропускаем onRequest дальше по цепочке хуков ядра наружу в сеть
-              resolveOnRequest();
-            });
-          })
-          .catch((err) => {
-            rejectOnRequest(err);
-          });
-      });
+      const release = await queue.acquire(req.signal);
+      releases.set(req, release);
     },
 
     /**
-     * @ru Перехватчик успешного ответа. Сигнализирует пулу о завершении операции и освобождает рабочий слот.
-     * @en Response phase interceptor. Signals the pool of operation completion and releases the worker slot.
+     * @ru Освобождает слот после успешного ответа.
+     * @en Releases the slot after a successful response.
+     *
+     * @param _res - @ru Ответ от сервера (не используется). @en Server response (unused).
+     * @param req - @ru Объект запроса. @en Request object.
      */
-    onResponse(_res: HttpResponse<any>, req: InternalRequest): void {
-      const resolveSlot = activeTokens.get(req);
-      if (resolveSlot) {
-        resolveSlot();
-        activeTokens.delete(req);
-      }
+    onResponse(_res: HttpResponse<any>, req?: InternalRequest): void {
+      releases.get(req!)?.();
+      releases.delete(req!);
     },
 
     /**
-     * @ru Перехватчик ошибок конвейера. Гарантирует возврат ноды в пул при сетевых сбоях или отменах.
-     * @en Error phase interceptor. Guarantees node return to the pool on network failures or aborts.
+     * @ru Освобождает слот при возникновении ошибки.
+     * @en Releases the slot when an error occurs.
+     *
+     * @param _err - @ru Объект ошибки (не используется). @en Error object (unused).
+     * @param req - @ru Объект запроса. @en Request object.
      */
-    onError(_err: HyperttpError, req: InternalRequest): void {
-      const resolveSlot = activeTokens.get(req);
-      if (resolveSlot) {
-        resolveSlot();
-        activeTokens.delete(req);
-      }
+    onError(_err: HyperttpError, req?: InternalRequest): void {
+      releases.get(req!)?.();
+      releases.delete(req!);
     },
   };
 }
