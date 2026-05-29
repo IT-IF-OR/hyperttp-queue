@@ -1,0 +1,1 @@
+{"version":3,"file":"plugin copy.d.ts","sourceRoot":"","sources":["../src/plugin copy.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EACV,WAAW,EAMZ,MAAM,iBAAiB,CAAC;AAGzB,OAAO,QAAQ,iBAAiB,CAAC;IAC/B,UAAU,wBAAwB;QAChC,KAAK,CAAC,EAAE;YAAE,OAAO,CAAC,EAAE,OAAO,CAAA;SAAE,CAAC;KAC/B;CACF;AAED,wBAAgB,SAAS,IAAI,WAAW,CAiCvC"}
