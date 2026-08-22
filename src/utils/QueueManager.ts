@@ -46,16 +46,23 @@ export class QueueManager {
    * @param signal - @ru AbortSignal для отмены ожидания. @en AbortSignal to cancel waiting.
    * @returns @ru Promise с функцией освобождения слота. @en Promise with a release function.
    */
+  private createRelease(): Release {
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.release();
+    };
+  }
+
   public acquire(signal?: AbortSignal): Promise<Release> {
     if (signal?.aborted) {
-      return Promise.reject(
-        new DOMException("The user aborted a request.", "AbortError"),
-      );
+      return Promise.reject(new DOMException("The user aborted a request.", "AbortError"));
     }
 
     if (this.running < this._maxConcurrent) {
       this.running++;
-      return Promise.resolve(() => this.release());
+      return Promise.resolve(this.createRelease());
     }
 
     return new Promise<Release>((resolve, reject) => {
@@ -75,9 +82,7 @@ export class QueueManager {
       const onAbort = () => {
         const idx = this.waiters.indexOf(waiter);
         if (idx >= 0) this.waiters.splice(idx, 1);
-        waiter.reject(
-          new DOMException("The user aborted a request.", "AbortError"),
-        );
+        waiter.reject(new DOMException("The user aborted a request.", "AbortError"));
       };
 
       signal?.addEventListener("abort", onAbort, { once: true });
@@ -94,7 +99,7 @@ export class QueueManager {
     const waiter = this.waiters.shift();
     if (waiter) {
       this.running++;
-      waiter.resolve(() => this.release());
+      waiter.resolve(this.createRelease());
     }
   }
 
