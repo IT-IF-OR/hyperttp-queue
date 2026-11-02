@@ -15,10 +15,19 @@ declare module "@hyperttp/types" {
   }
 }
 
+interface LifecycleContext extends RequestContext {
+  onSettled?: (
+    callback: (
+      outcome: { ok: true; response: UniversalResponse } | { ok: false; error: unknown },
+    ) => void,
+  ) => void;
+}
+
 const DEFAULT_PARTITION = "default";
 
 export function withQueue(options?: QueueOptions): HyperPlugin {
   const queues = new Map<string, QueueManager>();
+  const settlementKeys = new WeakSet<object>();
   const releases = new WeakMap<object, () => void>();
   let maxConcurrent = 500;
   let partitionKey: QueueOptions["partitionKey"];
@@ -31,7 +40,7 @@ export function withQueue(options?: QueueOptions): HyperPlugin {
 
   function release(req?: SendRequest, reqCtx?: RequestContext): void {
     const key = reqCtx ?? req;
-    if (!key) return;
+    if (!key || settlementKeys.has(key)) return;
     releases.get(key)?.();
     releases.delete(key);
   }
@@ -77,10 +86,19 @@ export function withQueue(options?: QueueOptions): HyperPlugin {
 
       try {
         const releaseSlot = await queue.acquire(signal);
-        releases.set(reqCtx ?? req, () => {
+        const key = reqCtx ?? req;
+        const releaseAcquired = (): void => {
+          if (releases.get(key) !== releaseAcquired) return;
+          releases.delete(key);
           releaseSlot();
           removeIdleQueue(partition, queue);
-        });
+        };
+        releases.set(key, releaseAcquired);
+        const lifecycleCtx: LifecycleContext | undefined = reqCtx;
+        if (typeof lifecycleCtx?.onSettled === "function") {
+          settlementKeys.add(key);
+          lifecycleCtx.onSettled(() => releaseAcquired());
+        }
       } catch (error) {
         removeIdleQueue(partition, queue);
         throw error;

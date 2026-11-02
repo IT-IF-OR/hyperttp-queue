@@ -253,3 +253,63 @@ describe("withQueue", () => {
     plugin.onResponse?.(response, active, context, activeContext);
   });
 });
+
+type Outcome = { ok: true; response: UniversalResponse } | { ok: false; error: unknown };
+
+function lifecycleContext(id: string) {
+  const callbacks: Array<(outcome: Outcome) => void> = [];
+  const ctx = {
+    ...requestContext(id),
+    onSettled: vi.fn((callback: (outcome: Outcome) => void) => callbacks.push(callback)),
+  };
+  return { ctx, settle: (outcome: Outcome) => callbacks.forEach((callback) => callback(outcome)) };
+}
+
+describe("queue settlement lifecycle", () => {
+  it.each(["success", "failure", "abort"])(
+    "holds its slot until final %s settlement and releases exactly once",
+    async (kind) => {
+      const plugin = withQueue({ maxConcurrent: 1 });
+      const config = pluginContext({});
+      plugin.setup?.(config);
+      const first = lifecycleContext("first");
+      const second = lifecycleContext("second");
+      await plugin.onRequest?.(request(), config, first.ctx);
+      let acquired = false;
+      const waiting = Promise.resolve(plugin.onRequest?.(request(), config, second.ctx)).then(
+        () => {
+          acquired = true;
+        },
+      );
+      plugin.onResponse?.(response, request(), config, first.ctx);
+      plugin.onError?.(new Error("intermediate"), request(), config, first.ctx);
+      await Promise.resolve();
+      expect(acquired).toBe(false);
+      expect(first.ctx.onSettled).toHaveBeenCalledTimes(1);
+      expect(second.ctx.onSettled).not.toHaveBeenCalled();
+      const outcome: Outcome =
+        kind === "success"
+          ? { ok: true, response }
+          : {
+              ok: false,
+              error:
+                kind === "abort" ? new DOMException("aborted", "AbortError") : new Error("final"),
+            };
+      first.settle(outcome);
+      await waiting;
+      expect(second.ctx.onSettled).toHaveBeenCalledTimes(1);
+      first.settle(outcome);
+      plugin.onResponse?.(response, request(), config, first.ctx);
+      let thirdAcquired = false;
+      const third = request();
+      const thirdWaiting = Promise.resolve(plugin.onRequest?.(third, config)).then(() => {
+        thirdAcquired = true;
+      });
+      await Promise.resolve();
+      expect(thirdAcquired).toBe(false);
+      second.settle({ ok: true, response });
+      await thirdWaiting;
+      plugin.onResponse?.(response, third, config);
+    },
+  );
+});

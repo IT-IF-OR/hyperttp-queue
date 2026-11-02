@@ -9,6 +9,8 @@ Concurrency queue plugin for Hyperttp.
 - Controls concurrent request execution in the Core v2 pipeline.
 - Supports protocol-neutral `SendRequest`, `UniversalResponse`, and `RequestContext` values.
 - Helps protect downstream services from request bursts.
+- Supports per-partition concurrency limits and cancellation while waiting.
+- Holds slots until final request settlement when Core exposes `RequestContext.onSettled`.
 
 ## Installation
 
@@ -17,6 +19,8 @@ npm install @hyperttp/queue
 # or
 bun add @hyperttp/queue
 ```
+
+Version 3 requires `@hyperttp/types` compatible with `^0.5.0`.
 
 ## Usage
 
@@ -36,6 +40,14 @@ Configure the plugin with the exported `QueueOptions` type.
 - `maxConcurrent` must be finite; `NaN` and infinities throw `RangeError`. Finite values are rounded down and clamped to at least one. The default plugin limit is 500.
 - The limit applies separately to each `partitionKey`, not globally. Idle partitions are removed automatically.
 - Waiting is cancelled when either the request signal or the context signal aborts. Combining two distinct signals requires runtime support for `AbortSignal.any` (for example, Node.js 20.3+).
+
+## Final lifecycle compatibility
+
+When Core provides optional `RequestContext.onSettled`, an acquired slot is held
+until final settlement (success, error, or cancellation), including response
+transformations. Intermediate response/error hooks do not release it. Each
+acquisition registers one settlement callback and release is idempotent. On older
+Core versions without this capability, response/error hooks release slots as before.
 
 ## License
 
