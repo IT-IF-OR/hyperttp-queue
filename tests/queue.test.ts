@@ -29,6 +29,20 @@ function pluginContext(config: HyperClientOptions): PluginContext {
 }
 
 describe("QueueManager", () => {
+  it.each([NaN, Infinity, -Infinity])("rejects non-finite limit %s", (limit) => {
+    expect(() => new QueueManager(limit)).toThrow(RangeError);
+  });
+
+  it.each([0, -10, 1.9])("normalizes finite limit %s to one slot", async (limit) => {
+    const queue = new QueueManager(limit);
+    const release = await queue.acquire();
+    const waiting = queue.acquire();
+    expect(queue.activeCount).toBe(1);
+    expect(queue.queuedCount).toBe(1);
+    release();
+    (await waiting)();
+    expect(queue.activeCount).toBe(0);
+  });
   it("releases queued work in FIFO order and release is idempotent", async () => {
     const queue = new QueueManager(1);
     const firstRelease = await queue.acquire();
@@ -58,6 +72,109 @@ describe("QueueManager", () => {
 });
 
 describe("withQueue", () => {
+  it("preserves explicit activation and configuration precedence", () => {
+    expect(withQueue().enabled?.({})).toBe(false);
+    expect(withQueue().enabled?.({ queue: { maxConcurrent: 1 } })).toBe(false);
+    expect(withQueue().enabled?.({ queue: { enabled: true } })).toBe(true);
+    expect(withQueue({}).enabled?.({})).toBe(true);
+    expect(withQueue({ enabled: false }).enabled?.({})).toBe(false);
+    expect(withQueue({ enabled: true }).enabled?.({ queue: { enabled: false } })).toBe(false);
+    expect(withQueue({ enabled: false }).enabled?.({ queue: { enabled: true } })).toBe(true);
+  });
+
+  it.each([NaN, Infinity, -Infinity])(
+    "rejects non-finite configuration %s during setup",
+    (limit) => {
+      expect(() => withQueue({ maxConcurrent: limit }).setup?.(pluginContext({}))).toThrow(
+        RangeError,
+      );
+    },
+  );
+
+  it("prefers client concurrency and partition settings over factory options", async () => {
+    const factoryPartition = vi.fn(() => "factory");
+    const configuredPartition = vi.fn(() => "configured");
+    const plugin = withQueue({ maxConcurrent: 2, partitionKey: factoryPartition });
+    const context = pluginContext({
+      queue: { maxConcurrent: 1, partitionKey: configuredPartition },
+    });
+    plugin.setup?.(context);
+    const first = request();
+    const second = request();
+    await plugin.onRequest?.(first, context);
+    let acquired = false;
+    const waiting = Promise.resolve(plugin.onRequest?.(second, context)).then(() => {
+      acquired = true;
+    });
+    await Promise.resolve();
+    expect(acquired).toBe(false);
+    expect(factoryPartition).not.toHaveBeenCalled();
+    expect(configuredPartition).toHaveBeenCalledTimes(2);
+    plugin.onResponse?.(response, first, context);
+    await waiting;
+    plugin.onResponse?.(response, second, context);
+  });
+
+  it.each(["request", "context"] as const)(
+    "observes the %s signal when both signals exist",
+    async (source) => {
+      const plugin = withQueue({ maxConcurrent: 1 });
+      const context = pluginContext({});
+      plugin.setup?.(context);
+      const active = request();
+      await plugin.onRequest?.(active, context);
+      const requestController = new AbortController();
+      const contextController = new AbortController();
+      const waiting = plugin.onRequest?.(
+        request("a", requestController.signal),
+        context,
+        requestContext("waiting", contextController.signal),
+      );
+      (source === "request" ? requestController : contextController).abort();
+      await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+      plugin.onResponse?.(response, active, context);
+    },
+  );
+
+  it("rejects a pre-aborted context even when the request has a live signal", async () => {
+    const plugin = withQueue({ maxConcurrent: 1 });
+    const controller = new AbortController();
+    controller.abort();
+    await expect(
+      plugin.onRequest?.(
+        request("a", new AbortController().signal),
+        pluginContext({}),
+        requestContext("aborted", controller.signal),
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+  });
+
+  it("retains busy partitions and removes idle ones after completion and cancellation", async () => {
+    const acquire = vi.spyOn(QueueManager.prototype, "acquire");
+    try {
+      const plugin = withQueue({ maxConcurrent: 1 });
+      const context = pluginContext({});
+      plugin.setup?.(context);
+      const first = request();
+      const controller = new AbortController();
+      await plugin.onRequest?.(first, context);
+      const waiting = plugin.onRequest?.(request("a", controller.signal), context);
+      controller.abort();
+      await expect(waiting).rejects.toMatchObject({ name: "AbortError" });
+      const second = request();
+      const blocked = plugin.onRequest?.(second, context);
+      expect(acquire.mock.contexts[2]).toBe(acquire.mock.contexts[0]);
+      plugin.onResponse?.(response, first, context);
+      await blocked;
+      plugin.onError?.(new Error("network"), second, context);
+      const third = request();
+      await plugin.onRequest?.(third, context);
+      expect(acquire.mock.contexts[3]).not.toBe(acquire.mock.contexts[0]);
+      plugin.onResponse?.(response, third, context);
+    } finally {
+      acquire.mockRestore();
+    }
+  });
   it("uses lifecycle context, maxConcurrent, and custom partitions", async () => {
     const partitionKey = vi.fn(
       (req: SendRequest, context?: RequestContext) =>
@@ -77,7 +194,7 @@ describe("withQueue", () => {
     await plugin.onRequest?.(reqA1, context, ctxA1);
     const blocked = plugin.onRequest?.(reqA2, context, ctxA2);
     let acquired = false;
-    void blocked?.then(() => {
+    void Promise.resolve(blocked).then(() => {
       acquired = true;
     });
     await Promise.resolve();

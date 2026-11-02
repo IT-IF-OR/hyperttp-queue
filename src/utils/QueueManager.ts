@@ -37,15 +37,12 @@ export class QueueManager {
    * @param maxConcurrent - @ru Максимальное количество одновременно выполняемых операций. @en Maximum number of concurrent operations.
    */
   constructor(maxConcurrent = 50) {
+    if (!Number.isFinite(maxConcurrent)) {
+      throw new RangeError("maxConcurrent must be a finite number");
+    }
     this._maxConcurrent = Math.max(1, Math.floor(maxConcurrent));
   }
 
-  /**
-   * @ru Запрашивает слот для выполнения операции.
-   * @en Acquires a slot to execute an operation.
-   * @param signal - @ru AbortSignal для отмены ожидания. @en AbortSignal to cancel waiting.
-   * @returns @ru Promise с функцией освобождения слота. @en Promise with a release function.
-   */
   private createRelease(): Release {
     let released = false;
     return () => {
@@ -55,6 +52,12 @@ export class QueueManager {
     };
   }
 
+  /**
+   * @ru Запрашивает слот для выполнения операции.
+   * @en Acquires a slot to execute an operation.
+   * @param signal - @ru AbortSignal для отмены ожидания. @en AbortSignal to cancel waiting.
+   * @returns @ru Promise с функцией освобождения слота. @en Promise with a release function.
+   */
   public acquire(signal?: AbortSignal): Promise<Release> {
     if (signal?.aborted) {
       return Promise.reject(new DOMException("The user aborted a request.", "AbortError"));

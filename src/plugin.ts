@@ -23,6 +23,12 @@ export function withQueue(options?: QueueOptions): HyperPlugin {
   let maxConcurrent = 500;
   let partitionKey: QueueOptions["partitionKey"];
 
+  function removeIdleQueue(partition: string, queue: QueueManager): void {
+    if (queue.activeCount === 0 && queue.queuedCount === 0 && queues.get(partition) === queue) {
+      queues.delete(partition);
+    }
+  }
+
   function release(req?: SendRequest, reqCtx?: RequestContext): void {
     const key = reqCtx ?? req;
     if (!key) return;
@@ -42,6 +48,9 @@ export function withQueue(options?: QueueOptions): HyperPlugin {
       ).network?.maxConcurrent;
       maxConcurrent =
         configured?.maxConcurrent ?? options?.maxConcurrent ?? legacyMaxConcurrent ?? 500;
+      if (!Number.isFinite(maxConcurrent)) {
+        throw new RangeError("maxConcurrent must be a finite number");
+      }
       partitionKey = configured?.partitionKey ?? options?.partitionKey;
     },
     async onRequest(
@@ -49,7 +58,12 @@ export function withQueue(options?: QueueOptions): HyperPlugin {
       _ctx?: PluginContext,
       reqCtx?: RequestContext,
     ): Promise<void> {
-      const signal = req.signal ?? reqCtx?.signal;
+      const requestSignal = req.signal;
+      const contextSignal = reqCtx?.signal;
+      const signal =
+        requestSignal && contextSignal && requestSignal !== contextSignal
+          ? AbortSignal.any([requestSignal, contextSignal])
+          : (requestSignal ?? contextSignal);
       if (signal?.aborted) {
         throw new DOMException("The user aborted a request.", "AbortError");
       }
@@ -61,8 +75,16 @@ export function withQueue(options?: QueueOptions): HyperPlugin {
         queues.set(partition, queue);
       }
 
-      const releaseSlot = await queue.acquire(signal);
-      releases.set(reqCtx ?? req, releaseSlot);
+      try {
+        const releaseSlot = await queue.acquire(signal);
+        releases.set(reqCtx ?? req, () => {
+          releaseSlot();
+          removeIdleQueue(partition, queue);
+        });
+      } catch (error) {
+        removeIdleQueue(partition, queue);
+        throw error;
+      }
     },
     onResponse(
       _res: UniversalResponse,
