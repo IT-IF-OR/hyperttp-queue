@@ -15,14 +15,6 @@ declare module "@hyperttp/types" {
   }
 }
 
-interface LifecycleContext extends RequestContext {
-  onSettled?: (
-    callback: (
-      outcome: { ok: true; response: UniversalResponse } | { ok: false; error: unknown },
-    ) => void,
-  ) => void;
-}
-
 const DEFAULT_PARTITION = "default";
 
 export function withQueue(options?: QueueOptions): HyperPlugin {
@@ -94,7 +86,7 @@ export function withQueue(options?: QueueOptions): HyperPlugin {
           removeIdleQueue(partition, queue);
         };
         releases.set(key, releaseAcquired);
-        const lifecycleCtx: LifecycleContext | undefined = reqCtx;
+        const lifecycleCtx = reqCtx;
         if (typeof lifecycleCtx?.onSettled === "function") {
           settlementKeys.add(key);
           lifecycleCtx.onSettled(() => releaseAcquired());
