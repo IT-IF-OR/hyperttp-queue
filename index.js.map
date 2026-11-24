@@ -1,0 +1,7 @@
+{
+  "version": 3,
+  "sources": ["../src/index.ts"],
+  "sourcesContent": ["export { withQueue } from \"./plugin.js\";\nexport { QueueManager } from \"./utils/QueueManager.js\";\nexport type { QueueOptions, Executor, QueueNode, Scheduler } from \"./types/queue.js\";\n"],
+  "mappings": "aAAA,OAAS,cAAiB,cAC1B,OAAS,iBAAoB",
+  "names": []
+}
